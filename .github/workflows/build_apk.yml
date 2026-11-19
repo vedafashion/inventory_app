@@ -31,8 +31,9 @@ jobs:
           mv pubspec.yaml.bak pubspec.yaml
           mv main.dart.bak lib/main.dart
           cp google-services.json android/app/google-services.json
-          sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "com.google.gms.google-services" version "4.4.2" apply false\n    id "org.jetbrains.kotlin.android" version "1.9.25"/' android/settings.gradle
+          sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "com.google.gms.google-services" version "4.4.2" apply false\n    id "org.jetbrains.kotlin.android" version "2.1.0"/' android/settings.gradle
           sed -i 's/id "kotlin-android"/id "kotlin-android"\n    id "com.google.gms.google-services"/' android/app/build.gradle
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 35/' android/app/build.gradle
           sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 23/' android/app/build.gradle
 
       - name: Install packages & build APK
