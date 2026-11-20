@@ -1,8 +1,13 @@
+import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,11 +31,12 @@ class InventoryApp extends StatelessWidget {
         stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(body: Center(child: CircularProgressIndicator()));
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
           }
-          if (snapshot.hasData && snapshot.data != null) {
-            final isOwner = snapshot.data!.email?.toLowerCase() == 'owner@shop.local';
-            return HomeShell(isOwner: isOwner);
+          if (snapshot.hasData) {
+            return const HomeScreen();
           }
           return const LoginScreen();
         },
@@ -39,7 +45,6 @@ class InventoryApp extends StatelessWidget {
   }
 }
 
-// ==================== 1. LOGIN SCREEN (USER ID + PASSWORD) ====================
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -48,25 +53,32 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _userIdController = TextEditingController();
-  final _passwordController = TextEditingController();
+  final _userController = TextEditingController();
+  final _passController = TextEditingController();
   bool _loading = false;
   String? _error;
 
-  Future<void> _login() async {
+  Future<void> _signIn() async {
+    final rawId = _userController.text.trim().toLowerCase();
+    final password = _passController.text.trim();
+    if (rawId.isEmpty || password.isEmpty) {
+      setState(() => _error = 'Enter User ID and Password');
+      return;
+    }
+
+    final email = rawId.contains('@') ? rawId : '$rawId@shop.local';
     setState(() {
       _loading = true;
       _error = null;
     });
+
     try {
-      final rawId = _userIdController.text.trim().toLowerCase();
-      final email = rawId.contains('@') ? rawId : '$rawId@shop.local';
       await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: email,
-        password: _passwordController.text.trim(),
+        password: password,
       );
     } on FirebaseAuthException catch (e) {
-      setState(() => _error = e.message ?? 'Invalid User ID or Password');
+      setState(() => _error = e.message ?? 'Sign in failed');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -81,12 +93,15 @@ class _LoginScreenState extends State<LoginScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.inventory_2_rounded, size: 72, color: Colors.indigo),
-              const SizedBox(height: 16),
-              const Text('Shop Inventory', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+              const Icon(Icons.storefront, size: 72, color: Colors.indigo),
+              const SizedBox(height: 12),
+              const Text(
+                'Shop Inventory',
+                style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+              ),
               const SizedBox(height: 24),
               TextField(
-                controller: _userIdController,
+                controller: _userController,
                 decoration: const InputDecoration(
                   labelText: 'User ID (e.g. owner or staff1)',
                   border: OutlineInputBorder(),
@@ -95,7 +110,7 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 16),
               TextField(
-                controller: _passwordController,
+                controller: _passController,
                 obscureText: true,
                 decoration: const InputDecoration(
                   labelText: 'Password',
@@ -107,15 +122,15 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 12),
                 Text(_error!, style: const TextStyle(color: Colors.red)),
               ],
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
               SizedBox(
                 width: double.infinity,
+                height: 48,
                 child: FilledButton(
-                  onPressed: _loading ? null : _login,
-                  style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+                  onPressed: _loading ? null : _signIn,
                   child: _loading
-                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Text('Sign In', style: TextStyle(fontSize: 16)),
+                      ? const CircularProgressIndicator(color: Colors.white)
+                      : const Text('Sign In'),
                 ),
               ),
             ],
@@ -126,247 +141,133 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// ==================== 2. HOME SHELL (SCANNER FIRST) ====================
-class HomeShell extends StatefulWidget {
-  final bool isOwner;
-  const HomeShell({super.key, required this.isOwner});
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
 
   @override
-  State<HomeShell> createState() => _HomeShellState();
+  State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeShellState extends State<HomeShell> {
+class _HomeScreenState extends State<HomeScreen> {
   int _tabIndex = 0;
+
+  bool get isOwner {
+    final email = FirebaseAuth.instance.currentUser?.email?.toLowerCase() ?? '';
+    return email == 'owner@shop.local';
+  }
 
   @override
   Widget build(BuildContext context) {
-    final screens = [
-      BarcodeScannerScreen(isOwner: widget.isOwner),
-      InventoryListScreen(isOwner: widget.isOwner),
-    ];
+    final roleLabel = isOwner ? 'Owner' : 'Staff';
+    final title = _tabIndex == 0
+        ? 'Scan Barcode ($roleLabel)'
+        : 'Inventory ($roleLabel)';
 
     return Scaffold(
-      body: screens[_tabIndex],
+      appBar: AppBar(
+        title: Text(title),
+        actions: [
+          IconButton(
+            tooltip: 'Barcode Maker & Print',
+            icon: const Icon(Icons.qr_code_2),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const BarcodePrintScreen(),
+                ),
+              );
+            },
+          ),
+          IconButton(
+            tooltip: 'Logout',
+            icon: const Icon(Icons.logout),
+            onPressed: () => FirebaseAuth.instance.signOut(),
+          ),
+        ],
+      ),
+      body: _tabIndex == 0
+          ? ScanTab(isOwner: isOwner)
+          : InventoryTab(isOwner: isOwner),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex,
         onDestinationSelected: (i) => setState(() => _tabIndex = i),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.qr_code_scanner), label: 'Scan'),
-          NavigationDestination(icon: Icon(Icons.list_alt), label: 'Inventory'),
+          NavigationDestination(
+            icon: Icon(Icons.qr_code_scanner),
+            label: 'Scan',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.inventory_2),
+            label: 'Inventory',
+          ),
         ],
       ),
     );
   }
 }
 
-// ==================== 3. BARCODE SCANNER SCREEN ====================
-class BarcodeScannerScreen extends StatefulWidget {
+class ScanTab extends StatefulWidget {
   final bool isOwner;
-  const BarcodeScannerScreen({super.key, required this.isOwner});
+  const ScanTab({super.key, required this.isOwner});
 
   @override
-  State<BarcodeScannerScreen> createState() => _BarcodeScannerScreenState();
+  State<ScanTab> createState() => _ScanTabState();
 }
 
-class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
-  final MobileScannerController _cameraController = MobileScannerController();
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
-  bool _isProcessing = false;
-  bool _torchOn = false;
+class _ScanTabState extends State<ScanTab> {
+  bool _processing = false;
 
-  @override
-  void dispose() {
-    _cameraController.dispose();
-    super.dispose();
-  }
+  Future<void> _handleBarcode(String rawCode) async {
+    final code = rawCode.trim();
+    if (code.isEmpty || _processing) return;
+    setState(() => _processing = true);
 
-  Future<void> _onDetect(BarcodeCapture capture) async {
-    if (_isProcessing) return;
-    final code = capture.barcodes.firstOrNull?.rawValue;
-    if (code == null || code.isEmpty) return;
-
-    setState(() => _isProcessing = true);
-    await _lookupBarcode(code);
-  }
-
-  Future<void> _lookupBarcode(String barcode) async {
     try {
-      final query = await _db
+      final doc = await FirebaseFirestore.instance
           .collection('products')
-          .where('barcode', isEqualTo: barcode)
-          .limit(1)
+          .doc(code)
           .get();
 
       if (!mounted) return;
-      if (query.docs.isEmpty) {
-        await _showNotFoundDialog(barcode);
+
+      if (doc.exists) {
+        await _showProductActionSheet(doc);
       } else {
-        await _showProductSheet(query.docs.first);
+        await _showNotFoundDialog(code);
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
       }
     } finally {
-      await Future.delayed(const Duration(milliseconds: 600));
-      if (mounted) setState(() => _isProcessing = false);
+      await Future.delayed(const Duration(milliseconds: 800));
+      if (mounted) setState(() => _processing = false);
     }
   }
 
-  Future<void> _showProductSheet(DocumentSnapshot doc) async {
-    final data = doc.data() as Map<String, dynamic>;
-    final name = data['name'] ?? 'Unnamed';
-    final size = data['size'] ?? '-';
-    final color = data['color'] ?? '-';
-    final sellingPrice = data['selling_price'] ?? 0;
-    final costPrice = data['cost_price'] ?? 0;
-    final currentStock = (data['stock_qty'] ?? 0) as int;
-    int qty = 1;
-
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheetState) => Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(child: Text(name, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
-                  Chip(
-                    label: Text('Stock: $currentStock', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    backgroundColor: currentStock <= 3 ? Colors.red.shade100 : Colors.green.shade100,
-                  ),
-                ],
-              ),
-              Text('Size: $size  •  Color: $color  •  SKU: ${data['barcode']}',
-                  style: TextStyle(color: Colors.grey.shade700)),
-              const Divider(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Selling Price', style: TextStyle(color: Colors.grey)),
-                      Text('₹$sellingPrice', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  if (widget.isOwner)
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        const Text('Cost Price (Owner)', style: TextStyle(color: Colors.grey)),
-                        Text('₹$costPrice', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Colors.blueGrey)),
-                      ],
-                    ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton.outlined(
-                    onPressed: qty > 1 ? () => setSheetState(() => qty--) : null,
-                    icon: const Icon(Icons.remove),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24),
-                    child: Text('$qty', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-                  ),
-                  IconButton.outlined(
-                    onPressed: () => setSheetState(() => qty++),
-                    icon: const Icon(Icons.add),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.red.shade600,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                      icon: const Icon(Icons.shopping_bag_outlined),
-                      label: Text('Sell (-$qty)'),
-                      onPressed: currentStock >= qty
-                          ? () async {
-                              await _updateStock(doc.id, '$name ($size)', -qty, 'sale');
-                              if (context.mounted) Navigator.pop(context);
-                            }
-                          : null,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green.shade600,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                      icon: const Icon(Icons.add_box_outlined),
-                      label: Text('Restock (+$qty)'),
-                      onPressed: () async {
-                        await _updateStock(doc.id, '$name ($size)', qty, 'restock');
-                        if (context.mounted) Navigator.pop(context);
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _updateStock(String docId, String productName, int changeQty, String type) async {
-    final batch = _db.batch();
-    batch.update(_db.collection('products').doc(docId), {
-      'stock_qty': FieldValue.increment(changeQty),
-      'updated_at': FieldValue.serverTimestamp(),
-    });
-    batch.set(_db.collection('stock_logs').doc(), {
-      'product_id': docId,
-      'product_name': productName,
-      'change': changeQty,
-      'type': type,
-      'updated_by': FirebaseAuth.instance.currentUser?.email ?? 'Unknown',
-      'timestamp': FieldValue.serverTimestamp(),
-    });
-    await batch.commit();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(changeQty < 0 ? 'Sold ${changeQty.abs()}x $productName' : 'Added +$changeQty to $productName')),
-      );
-    }
-  }
-
-  Future<void> _showNotFoundDialog(String barcode) async {
+  Future<void> _showNotFoundDialog(String code) async {
     await showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Item Not Found'),
-        content: Text('No product matches barcode:\n$barcode'),
+      builder: (ctx) => AlertDialog(
+        title: const Text('Barcode Not Found'),
+        content: Text('No item registered for barcode:\n$code'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Scan Again')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
           if (widget.isOwner)
             FilledButton(
               onPressed: () {
-                Navigator.pop(context);
+                Navigator.pop(ctx);
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => AddProductScreen(initialBarcode: barcode)),
+                  MaterialPageRoute(
+                    builder: (_) => AddEditProductScreen(initialBarcode: code),
+                  ),
                 );
               },
               child: const Text('Add New Item'),
@@ -376,113 +277,213 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
     );
   }
 
-  Future<void> _showManualEntry() async {
-    final ctrl = TextEditingController();
-    setState(() => _isProcessing = true);
-    final code = await showDialog<String>(
+  Future<void> _showProductActionSheet(DocumentSnapshot doc) async {
+    final data = doc.data() as Map<String, dynamic>;
+    final name = data['name'] ?? 'Unnamed';
+    final size = data['size'] ?? '';
+    final color = data['color'] ?? '';
+    final sellingPrice = data['sellingPrice'] ?? 0;
+    final costPrice = data['costPrice'] ?? 0;
+    int stock = (data['stock'] ?? 0) as int;
+
+    await showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Enter Barcode'),
-        content: TextField(controller: ctrl, autofocus: true, decoration: const InputDecoration(border: OutlineInputBorder())),
+      isScrollControlled: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            Future<void> updateStock(int delta) async {
+              if (stock + delta < 0) return;
+              await doc.reference.update({'stock': FieldValue.increment(delta)});
+              await FirebaseFirestore.instance.collection('stock_logs').add({
+                'barcode': doc.id,
+                'name': name,
+                'change': delta,
+                'by': FirebaseAuth.instance.currentUser?.email ?? '',
+                'timestamp': FieldValue.serverTimestamp(),
+              });
+              setSheetState(() => stock += delta);
+            }
+
+            return Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          name,
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Print Barcode Label',
+                        icon: const Icon(Icons.print, color: Colors.indigo),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => BarcodePrintScreen(
+                                initialBarcode: doc.id,
+                                initialName: name,
+                                initialSubtext:
+                                    [size, color].where((e) => e.isNotEmpty).join(' • '),
+                                initialPrice: sellingPrice.toString(),
+                                initialCopies: stock > 0 ? stock : 1,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                  Text('Barcode: ${doc.id}'),
+                  if (size.isNotEmpty || color.isNotEmpty)
+                    Text('Size: $size  |  Color: $color'),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Selling Price: ₹$sellingPrice',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.green,
+                    ),
+                  ),
+                  if (widget.isOwner)
+                    Text(
+                      'Cost Price: ₹$costPrice',
+                      style: const TextStyle(color: Colors.deepOrange),
+                    ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Available Stock: $stock',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.red.shade600,
+                          ),
+                          onPressed: stock > 0 ? () => updateStock(-1) : null,
+                          icon: const Icon(Icons.remove),
+                          label: const Text('Sell (-1)'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.green.shade600,
+                          ),
+                          onPressed: () => updateStock(1),
+                          icon: const Icon(Icons.add),
+                          label: const Text('Restock (+1)'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _manualEntryDialog() async {
+    final ctrl = TextEditingController();
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Enter Barcode Manually'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Barcode / SKU',
+            border: OutlineInputBorder(),
+          ),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, ctrl.text.trim()), child: const Text('Search')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _handleBarcode(ctrl.text);
+            },
+            child: const Text('Search'),
+          ),
         ],
       ),
     );
-    if (code != null && code.isNotEmpty) {
-      await _lookupBarcode(code);
-    } else if (mounted) {
-      setState(() => _isProcessing = false);
-    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Scan Barcode'),
-        actions: [
-          IconButton(
-            icon: Icon(_torchOn ? Icons.flash_on : Icons.flash_off),
-            onPressed: () {
-              _cameraController.toggleTorch();
-              setState(() => _torchOn = !_torchOn);
-            },
+    return Stack(
+      children: [
+        MobileScanner(
+          onDetect: (capture) {
+            final barcodes = capture.barcodes;
+            if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
+              _handleBarcode(barcodes.first.rawValue!);
+            }
+          },
+        ),
+        Positioned(
+          bottom: 24,
+          left: 24,
+          right: 24,
+          child: FilledButton.icon(
+            onPressed: _manualEntryDialog,
+            icon: const Icon(Icons.keyboard),
+            label: const Text('Type Barcode Manually'),
           ),
-          IconButton(icon: const Icon(Icons.keyboard), onPressed: _showManualEntry),
-          IconButton(icon: const Icon(Icons.logout), onPressed: () => FirebaseAuth.instance.signOut()),
-        ],
-      ),
-      body: Stack(
-        children: [
-          MobileScanner(controller: _cameraController, onDetect: _onDetect),
-          Center(
-            child: Container(
-              width: 260,
-              height: 160,
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.greenAccent, width: 3),
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-          ),
-          Positioned(
-            bottom: 24,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
-                child: Text(
-                  _isProcessing ? 'Checking stock...' : 'Point camera at barcode',
-                  style: const TextStyle(color: Colors.white),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
 
-// ==================== 4. LIVE INVENTORY LIST SCREEN ====================
-class InventoryListScreen extends StatefulWidget {
+class InventoryTab extends StatefulWidget {
   final bool isOwner;
-  const InventoryListScreen({super.key, required this.isOwner});
+  const InventoryTab({super.key, required this.isOwner});
 
   @override
-  State<InventoryListScreen> createState() => _InventoryListScreenState();
+  State<InventoryTab> createState() => _InventoryTabState();
 }
 
-class _InventoryListScreenState extends State<InventoryListScreen> {
+class _InventoryTabState extends State<InventoryTab> {
   String _search = '';
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.isOwner ? 'Inventory (Owner)' : 'Inventory (Staff)'),
-        actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: () => FirebaseAuth.instance.signOut()),
-        ],
-      ),
-      floatingActionButton: widget.isOwner
-          ? FloatingActionButton.extended(
-              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AddProductScreen())),
-              icon: const Icon(Icons.add),
-              label: const Text('Add Item'),
-            )
-          : null,
       body: Column(
         children: [
           Padding(
             padding: const EdgeInsets.all(12),
             child: TextField(
               decoration: const InputDecoration(
-                hintText: 'Search by name or barcode...',
+                hintText: 'Search by name, barcode, size, or color...',
                 prefixIcon: Icon(Icons.search),
                 border: OutlineInputBorder(),
               ),
@@ -491,34 +492,125 @@ class _InventoryListScreenState extends State<InventoryListScreen> {
           ),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance.collection('products').orderBy('name').snapshots(),
+              stream: FirebaseFirestore.instance
+                  .collection('products')
+                  .orderBy('name')
+                  .snapshots(),
               builder: (context, snapshot) {
-                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-                final docs = snapshot.data!.docs.where((d) {
-                  final data = d.data() as Map<String, dynamic>;
-                  final name = (data['name'] ?? '').toString().toLowerCase();
-                  final code = (data['barcode'] ?? '').toString().toLowerCase();
-                  return name.contains(_search) || code.contains(_search);
+                if (snapshot.hasError) {
+                  return Center(child: Text('Error: ${snapshot.error}'));
+                }
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final docs = snapshot.data!.docs.where((doc) {
+                  if (_search.isEmpty) return true;
+                  final d = doc.data() as Map<String, dynamic>;
+                  final text =
+                      '${doc.id} ${d['name']} ${d['size']} ${d['color']}'
+                          .toLowerCase();
+                  return text.contains(_search);
                 }).toList();
 
-                if (docs.isEmpty) return const Center(child: Text('No items found.'));
+                if (docs.isEmpty) {
+                  return const Center(child: Text('No items found.'));
+                }
 
                 return ListView.separated(
                   itemCount: docs.length,
                   separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (context, i) {
-                    final data = docs[i].data() as Map<String, dynamic>;
-                    final stock = (data['stock_qty'] ?? 0) as int;
+                  itemBuilder: (context, index) {
+                    final doc = docs[index];
+                    final d = doc.data() as Map<String, dynamic>;
+                    final name = d['name'] ?? '';
+                    final size = d['size'] ?? '';
+                    final color = d['color'] ?? '';
+                    final stock = d['stock'] ?? 0;
+                    final selling = d['sellingPrice'] ?? 0;
+                    final cost = d['costPrice'] ?? 0;
+
                     return ListTile(
-                      title: Text(data['name'] ?? 'Unnamed', style: const TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: Text(
-                        'Size: ${data['size'] ?? '-'} • Color: ${data['color'] ?? '-'}\n'
-                        'Sell: ₹${data['selling_price'] ?? 0}'
-                        '${widget.isOwner ? '  •  Cost: ₹${data['cost_price'] ?? 0}' : ''}',
+                      onTap: widget.isOwner
+                          ? () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      AddEditProductScreen(existingDoc: doc),
+                                ),
+                              );
+                            }
+                          : null,
+                      title: Text(
+                        name,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
-                      trailing: Chip(
-                        label: Text('$stock', style: const TextStyle(fontWeight: FontWeight.bold)),
-                        backgroundColor: stock <= 3 ? Colors.red.shade100 : Colors.green.shade100,
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'SKU: ${doc.id}${size.isNotEmpty ? ' | Size: $size' : ''}${color.isNotEmpty ? ' | $color' : ''}',
+                          ),
+                          Row(
+                            children: [
+                              Text(
+                                'Price: ₹$selling',
+                                style: const TextStyle(
+                                  color: Colors.green,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              if (widget.isOwner) ...[
+                                const SizedBox(width: 12),
+                                Text(
+                                  'Cost: ₹$cost',
+                                  style: const TextStyle(
+                                    color: Colors.deepOrange,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ],
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: 'Print Barcode Label',
+                            icon: const Icon(Icons.print, color: Colors.indigo),
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => BarcodePrintScreen(
+                                    initialBarcode: doc.id,
+                                    initialName: name,
+                                    initialSubtext: [size, color]
+                                        .where((e) => e.isNotEmpty)
+                                        .join(' • '),
+                                    initialPrice: selling.toString(),
+                                    initialCopies: (stock is int && stock > 0)
+                                        ? stock
+                                        : 1,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                          Chip(
+                            label: Text(
+                              'Qty: $stock',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: (stock as int) <= 2
+                                    ? Colors.red
+                                    : Colors.black87,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     );
                   },
@@ -528,84 +620,619 @@ class _InventoryListScreenState extends State<InventoryListScreen> {
           ),
         ],
       ),
+      floatingActionButton: widget.isOwner
+          ? FloatingActionButton.extended(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const AddEditProductScreen(),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.add),
+              label: const Text('Add Item'),
+            )
+          : null,
     );
   }
 }
 
-// ==================== 5. ADD PRODUCT SCREEN (OWNER ONLY) ====================
-class AddProductScreen extends StatefulWidget {
+class AddEditProductScreen extends StatefulWidget {
   final String? initialBarcode;
-  const AddProductScreen({super.key, this.initialBarcode});
+  final DocumentSnapshot? existingDoc;
+  const AddEditProductScreen({
+    super.key,
+    this.initialBarcode,
+    this.existingDoc,
+  });
 
   @override
-  State<AddProductScreen> createState() => _AddProductScreenState();
+  State<AddEditProductScreen> createState() => _AddEditProductScreenState();
 }
 
-class _AddProductScreenState extends State<AddProductScreen> {
-  final _nameCtrl = TextEditingController();
+class _AddEditProductScreenState extends State<AddEditProductScreen> {
   final _barcodeCtrl = TextEditingController();
+  final _nameCtrl = TextEditingController();
   final _sizeCtrl = TextEditingController();
   final _colorCtrl = TextEditingController();
   final _costCtrl = TextEditingController();
-  final _sellCtrl = TextEditingController();
-  final _qtyCtrl = TextEditingController(text: '1');
+  final _sellingCtrl = TextEditingController();
+  final _stockCtrl = TextEditingController(text: '1');
   bool _saving = false;
+
+  bool get isEditing => widget.existingDoc != null;
 
   @override
   void initState() {
     super.initState();
-    if (widget.initialBarcode != null) _barcodeCtrl.text = widget.initialBarcode!;
+    if (widget.existingDoc != null) {
+      final d = widget.existingDoc!.data() as Map<String, dynamic>;
+      _barcodeCtrl.text = widget.existingDoc!.id;
+      _nameCtrl.text = (d['name'] ?? '').toString();
+      _sizeCtrl.text = (d['size'] ?? '').toString();
+      _colorCtrl.text = (d['color'] ?? '').toString();
+      _costCtrl.text = (d['costPrice'] ?? '').toString();
+      _sellingCtrl.text = (d['sellingPrice'] ?? '').toString();
+      _stockCtrl.text = (d['stock'] ?? 0).toString();
+    } else if (widget.initialBarcode != null) {
+      _barcodeCtrl.text = widget.initialBarcode!;
+    }
   }
 
-  Future<void> _save() async {
-    if (_nameCtrl.text.trim().isEmpty || _barcodeCtrl.text.trim().isEmpty) return;
-    setState(() => _saving = true);
-    await FirebaseFirestore.instance.collection('products').add({
-      'name': _nameCtrl.text.trim(),
-      'barcode': _barcodeCtrl.text.trim(),
-      'size': _sizeCtrl.text.trim(),
-      'color': _colorCtrl.text.trim(),
-      'cost_price': num.tryParse(_costCtrl.text.trim()) ?? 0,
-      'selling_price': num.tryParse(_sellCtrl.text.trim()) ?? 0,
-      'stock_qty': int.tryParse(_qtyCtrl.text.trim()) ?? 0,
-      'updated_at': FieldValue.serverTimestamp(),
+  void _generateBarcode() {
+    final rand = Random();
+    final digits = List.generate(9, (_) => rand.nextInt(10)).join();
+    setState(() {
+      _barcodeCtrl.text = '890$digits';
     });
-    if (mounted) Navigator.pop(context);
+  }
+
+  Future<void> _scanBarcodeIntoField() async {
+    final scanned = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SizedBox(
+        height: 320,
+        child: Column(
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text(
+                'Scan Item Barcode',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+            Expanded(
+              child: MobileScanner(
+                onDetect: (capture) {
+                  final codes = capture.barcodes;
+                  if (codes.isNotEmpty && codes.first.rawValue != null) {
+                    Navigator.pop(ctx, codes.first.rawValue!);
+                  }
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (scanned != null && mounted) {
+      setState(() => _barcodeCtrl.text = scanned.trim());
+    }
+  }
+
+  Future<void> _save({bool openPrint = false}) async {
+    final barcode = _barcodeCtrl.text.trim();
+    final name = _nameCtrl.text.trim();
+    if (barcode.isEmpty || name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Barcode and Product Name are required')),
+      );
+      return;
+    }
+
+    setState(() => _saving = true);
+    try {
+      final stock = int.tryParse(_stockCtrl.text.trim()) ?? 0;
+      final selling = num.tryParse(_sellingCtrl.text.trim()) ?? 0;
+      final size = _sizeCtrl.text.trim();
+      final color = _colorCtrl.text.trim();
+
+      await FirebaseFirestore.instance
+          .collection('products')
+          .doc(barcode)
+          .set({
+        'name': name,
+        'size': size,
+        'color': color,
+        'costPrice': num.tryParse(_costCtrl.text.trim()) ?? 0,
+        'sellingPrice': selling,
+        'stock': stock,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (!mounted) return;
+      if (openPrint) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => BarcodePrintScreen(
+              initialBarcode: barcode,
+              initialName: name,
+              initialSubtext:
+                  [size, color].where((e) => e.isNotEmpty).join(' • '),
+              initialPrice: selling.toString(),
+              initialCopies: stock > 0 ? stock : 1,
+            ),
+          ),
+        );
+      } else {
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Save failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _deleteProduct() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Product?'),
+        content: Text('Remove ${_nameCtrl.text} from inventory?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true && widget.existingDoc != null) {
+      await widget.existingDoc!.reference.delete();
+      if (mounted) Navigator.pop(context);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Add New Product')),
-      body: ListView(
+      appBar: AppBar(
+        title: Text(isEditing ? 'Edit Product' : 'Add New Product'),
+        actions: [
+          if (isEditing)
+            IconButton(
+              tooltip: 'Delete Product',
+              icon: const Icon(Icons.delete, color: Colors.red),
+              onPressed: _deleteProduct,
+            ),
+        ],
+      ),
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(
+              controller: _barcodeCtrl,
+              readOnly: isEditing,
+              decoration: InputDecoration(
+                labelText: 'Barcode / SKU *',
+                border: const OutlineInputBorder(),
+                suffixIcon: isEditing
+                    ? null
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: 'Scan Barcode',
+                            icon: const Icon(Icons.qr_code_scanner),
+                            onPressed: _scanBarcodeIntoField,
+                          ),
+                          IconButton(
+                            tooltip: 'Auto-Generate Barcode',
+                            icon: const Icon(Icons.auto_awesome),
+                            onPressed: _generateBarcode,
+                          ),
+                        ],
+                      ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _nameCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Product Name *',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _sizeCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Size (e.g. M)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: _colorCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Color',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _costCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Cost Price (₹)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: _sellingCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Selling Price (₹)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _stockCtrl,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: isEditing ? 'Current Stock Qty' : 'Opening Stock Qty',
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: FilledButton(
+                onPressed: _saving ? null : () => _save(openPrint: false),
+                child: _saving
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Text('Save Product'),
+              ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: OutlinedButton.icon(
+                onPressed: _saving ? null : () => _save(openPrint: true),
+                icon: const Icon(Icons.print),
+                label: const Text('Save & Print Barcode Labels'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class BarcodePrintScreen extends StatefulWidget {
+  final String? initialBarcode;
+  final String? initialName;
+  final String? initialSubtext;
+  final String? initialPrice;
+  final int initialCopies;
+
+  const BarcodePrintScreen({
+    super.key,
+    this.initialBarcode,
+    this.initialName,
+    this.initialSubtext,
+    this.initialPrice,
+    this.initialCopies = 1,
+  });
+
+  @override
+  State<BarcodePrintScreen> createState() => _BarcodePrintScreenState();
+}
+
+class _BarcodePrintScreenState extends State<BarcodePrintScreen> {
+  late final TextEditingController _codeCtrl;
+  late final TextEditingController _nameCtrl;
+  late final TextEditingController _subtextCtrl;
+  late final TextEditingController _priceCtrl;
+
+  String _paperType = 'thermal_50x25'; // thermal_50x25, thermal_38x25, a4_sheet
+  int _copies = 1;
+  bool _showPrice = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _codeCtrl = TextEditingController(
+      text: widget.initialBarcode ?? '890${100000000 + Random().nextInt(899999999)}',
+    );
+    _nameCtrl = TextEditingController(text: widget.initialName ?? 'Veda Fashion Hub');
+    _subtextCtrl = TextEditingController(text: widget.initialSubtext ?? '');
+    _priceCtrl = TextEditingController(text: widget.initialPrice ?? '');
+    _copies = widget.initialCopies < 1 ? 1 : widget.initialCopies;
+  }
+
+  void _generateNewCode() {
+    final rand = Random();
+    final digits = List.generate(9, (_) => rand.nextInt(10)).join();
+    setState(() {
+      _codeCtrl.text = '890$digits';
+    });
+  }
+
+  pw.Widget _buildSingleSticker(double width, double height) {
+    final code = _codeCtrl.text.trim().isEmpty ? '000000' : _codeCtrl.text.trim();
+    final name = _nameCtrl.text.trim();
+    final sub = _subtextCtrl.text.trim();
+    final price = _priceCtrl.text.trim();
+
+    return pw.Container(
+      width: width,
+      height: height,
+      padding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      decoration: _paperType == 'a4_sheet'
+          ? pw.BoxDecoration(
+              border: pw.Border.all(color: PdfColors.grey400, width: 0.5),
+            )
+          : null,
+      child: pw.Column(
+        mainAxisAlignment: pw.MainAxisAlignment.center,
+        crossAxisAlignment: pw.CrossAxisAlignment.center,
         children: [
-          TextField(controller: _barcodeCtrl, decoration: const InputDecoration(labelText: 'Barcode / SKU *', border: OutlineInputBorder())),
-          const SizedBox(height: 12),
-          TextField(controller: _nameCtrl, decoration: const InputDecoration(labelText: 'Product Name *', border: OutlineInputBorder())),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(child: TextField(controller: _sizeCtrl, decoration: const InputDecoration(labelText: 'Size (e.g. M)', border: OutlineInputBorder()))),
-              const SizedBox(width: 12),
-              Expanded(child: TextField(controller: _colorCtrl, decoration: const InputDecoration(labelText: 'Color', border: OutlineInputBorder()))),
-            ],
+          if (name.isNotEmpty)
+            pw.Text(
+              name,
+              maxLines: 1,
+              overflow: pw.TextOverflow.clip,
+              style: pw.TextStyle(
+                fontSize: _paperType == 'thermal_38x25' ? 6.5 : 7.5,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          if (sub.isNotEmpty || (_showPrice && price.isNotEmpty))
+            pw.Text(
+              [
+                if (sub.isNotEmpty) sub,
+                if (_showPrice && price.isNotEmpty) 'MRP: Rs.$price',
+              ].join('  |  '),
+              maxLines: 1,
+              style: pw.TextStyle(
+                fontSize: _paperType == 'thermal_38x25' ? 6 : 6.8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          pw.SizedBox(height: 2),
+          pw.BarcodeWidget(
+            barcode: pw.Barcode.code128(),
+            data: code,
+            width: width - 10,
+            height: height * 0.48,
+            drawText: true,
+            textStyle: const pw.TextStyle(fontSize: 6.5),
           ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(child: TextField(controller: _costCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Cost Price (₹)', border: OutlineInputBorder()))),
-              const SizedBox(width: 12),
-              Expanded(child: TextField(controller: _sellCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Selling Price (₹)', border: OutlineInputBorder()))),
-            ],
+        ],
+      ),
+    );
+  }
+
+  Future<Uint8List> _generatePdf(PdfPageFormat format) async {
+    final pdf = pw.Document();
+
+    if (_paperType == 'a4_sheet') {
+      const labelW = 62 * PdfPageFormat.mm;
+      const labelH = 32 * PdfPageFormat.mm;
+
+      pdf.addPage(
+        pw.MultiPage(
+          pageFormat: PdfPageFormat.a4,
+          margin: const pw.EdgeInsets.all(8 * PdfPageFormat.mm),
+          build: (ctx) => [
+            pw.Wrap(
+              spacing: 4 * PdfPageFormat.mm,
+              runSpacing: 3 * PdfPageFormat.mm,
+              children: List.generate(
+                _copies,
+                (_) => _buildSingleSticker(labelW, labelH),
+              ),
+            ),
+          ],
+        ),
+      );
+    } else {
+      final w = (_paperType == 'thermal_38x25' ? 38 : 50) * PdfPageFormat.mm;
+      final h = 25 * PdfPageFormat.mm;
+      final stickerFormat = PdfPageFormat(w, h, marginAll: 1 * PdfPageFormat.mm);
+
+      for (int i = 0; i < _copies; i++) {
+        pdf.addPage(
+          pw.Page(
+            pageFormat: stickerFormat,
+            build: (ctx) => pw.Center(
+              child: _buildSingleSticker(w - 2 * PdfPageFormat.mm, h - 2 * PdfPageFormat.mm),
+            ),
           ),
-          const SizedBox(height: 12),
-          TextField(controller: _qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Opening Stock Qty', border: OutlineInputBorder())),
-          const SizedBox(height: 24),
-          FilledButton(
-            onPressed: _saving ? null : _save,
-            style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
-            child: _saving ? const CircularProgressIndicator(color: Colors.white) : const Text('Save Product'),
+        );
+      }
+    }
+
+    return pdf.save();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Barcode Maker & Print'),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _codeCtrl,
+                        decoration: InputDecoration(
+                          labelText: 'Barcode Number / Text',
+                          isDense: true,
+                          border: const OutlineInputBorder(),
+                          suffixIcon: IconButton(
+                            tooltip: 'Generate Random Barcode',
+                            icon: const Icon(Icons.auto_awesome),
+                            onPressed: _generateNewCode,
+                          ),
+                        ),
+                        onChanged: (_) => setState(() {}),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      width: 110,
+                      child: TextField(
+                        controller: _priceCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Price (₹)',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (_) => setState(() {}),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _nameCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Title / Product Name',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (_) => setState(() {}),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _subtextCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Size / Color',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (_) => setState(() {}),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: _paperType,
+                        isDense: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Label / Paper Size',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'thermal_50x25',
+                            child: Text('Thermal Label (50×25 mm)'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'thermal_38x25',
+                            child: Text('Thermal Label (38×25 mm)'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'a4_sheet',
+                            child: Text('A4 Sticker Sheet (3×8)'),
+                          ),
+                        ],
+                        onChanged: (v) {
+                          if (v != null) setState(() => _paperType = v);
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Row(
+                      children: [
+                        IconButton(
+                          onPressed: _copies > 1
+                              ? () => setState(() => _copies--)
+                              : null,
+                          icon: const Icon(Icons.remove_circle_outline),
+                        ),
+                        Text(
+                          '$_copies',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => setState(() => _copies++),
+                          icon: const Icon(Icons.add_circle_outline),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: PdfPreview(
+              key: ValueKey(
+                '${_codeCtrl.text}_${_nameCtrl.text}_${_subtextCtrl.text}_${_priceCtrl.text}_${_paperType}_$_copies',
+              ),
+              build: _generatePdf,
+              canChangeOrientation: false,
+              canChangePageFormat: false,
+              canDebug: false,
+              pdfFileName: 'barcode_${_codeCtrl.text.trim()}.pdf',
+            ),
           ),
         ],
       ),
