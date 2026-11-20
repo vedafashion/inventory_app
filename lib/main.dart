@@ -21,7 +21,7 @@ class InventoryApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Shop Inventory',
+      title: 'Veda Fashion Hub',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
@@ -93,10 +93,23 @@ class _LoginScreenState extends State<LoginScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.storefront, size: 72, color: Colors.indigo),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(18),
+                child: Image.asset(
+                  'logo.png',
+                  width: 96,
+                  height: 96,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => const Icon(
+                    Icons.storefront,
+                    size: 72,
+                    color: Colors.indigo,
+                  ),
+                ),
+              ),
               const SizedBox(height: 12),
               const Text(
-                'Shop Inventory',
+                'Veda Fashion Hub',
                 style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 24),
@@ -160,7 +173,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final roleLabel = isOwner ? 'Owner' : 'Staff';
     final title = _tabIndex == 0
-        ? 'Scan Barcode ($roleLabel)'
+        ? 'Veda Fashion Hub ($roleLabel)'
         : 'Inventory ($roleLabel)';
 
     return Scaffold(
@@ -969,7 +982,7 @@ class _BarcodePrintScreenState extends State<BarcodePrintScreen> {
   late final TextEditingController _subtextCtrl;
   late final TextEditingController _priceCtrl;
 
-  String _paperType = 'thermal_50x25'; // thermal_50x25, thermal_38x25, a4_sheet
+  String _paperType = 'thermal_50x25';
   int _copies = 1;
   bool _showPrice = true;
 
