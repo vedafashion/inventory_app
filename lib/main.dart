@@ -12,6 +12,10 @@ import 'package:printing/printing.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
+  FirebaseFirestore.instance.settings = const Settings(
+    persistenceEnabled: true,
+    cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+  );
   runApp(const InventoryApp());
 }
 
@@ -231,17 +235,24 @@ class ScanTab extends StatefulWidget {
 class _ScanTabState extends State<ScanTab> {
   bool _processing = false;
 
+  Future<DocumentSnapshot> _fetchDocWithFallback(String code) async {
+    final ref = FirebaseFirestore.instance.collection('products').doc(code);
+    try {
+      return await ref
+          .get(const GetOptions(source: Source.server))
+          .timeout(const Duration(seconds: 4));
+    } catch (_) {
+      return await ref.get(const GetOptions(source: Source.cache));
+    }
+  }
+
   Future<void> _handleBarcode(String rawCode) async {
     final code = rawCode.trim();
     if (code.isEmpty || _processing) return;
     setState(() => _processing = true);
 
     try {
-      final doc = await FirebaseFirestore.instance
-          .collection('products')
-          .doc(code)
-          .get();
-
+      final doc = await _fetchDocWithFallback(code);
       if (!mounted) return;
 
       if (doc.exists) {
@@ -251,9 +262,7 @@ class _ScanTabState extends State<ScanTab> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
+        await _showNotFoundDialog(code);
       }
     } finally {
       await Future.delayed(const Duration(milliseconds: 800));
@@ -307,8 +316,8 @@ class _ScanTabState extends State<ScanTab> {
           builder: (ctx, setSheetState) {
             Future<void> updateStock(int delta) async {
               if (stock + delta < 0) return;
-              await doc.reference.update({'stock': FieldValue.increment(delta)});
-              await FirebaseFirestore.instance.collection('stock_logs').add({
+              doc.reference.update({'stock': FieldValue.increment(delta)});
+              FirebaseFirestore.instance.collection('stock_logs').add({
                 'barcode': doc.id,
                 'name': name,
                 'change': delta,
@@ -510,11 +519,8 @@ class _InventoryTabState extends State<InventoryTab> {
                   .orderBy('name')
                   .snapshots(),
               builder: (context, snapshot) {
-                if (snapshot.hasError) {
-                  return Center(child: Text('Error: ${snapshot.error}'));
-                }
                 if (!snapshot.hasData) {
-                  return const Center(child: CircularProgressIndicator());
+                  return const Center(child: Text('No items yet. Tap + Add Item.'));
                 }
 
                 final docs = snapshot.data!.docs.where((doc) {
@@ -745,51 +751,38 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
     }
 
     setState(() => _saving = true);
-    try {
-      final stock = int.tryParse(_stockCtrl.text.trim()) ?? 0;
-      final selling = num.tryParse(_sellingCtrl.text.trim()) ?? 0;
-      final size = _sizeCtrl.text.trim();
-      final color = _colorCtrl.text.trim();
+    final stock = int.tryParse(_stockCtrl.text.trim()) ?? 0;
+    final selling = num.tryParse(_sellingCtrl.text.trim()) ?? 0;
+    final size = _sizeCtrl.text.trim();
+    final color = _colorCtrl.text.trim();
 
-      await FirebaseFirestore.instance
-          .collection('products')
-          .doc(barcode)
-          .set({
-        'name': name,
-        'size': size,
-        'color': color,
-        'costPrice': num.tryParse(_costCtrl.text.trim()) ?? 0,
-        'sellingPrice': selling,
-        'stock': stock,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+    FirebaseFirestore.instance.collection('products').doc(barcode).set({
+      'name': name,
+      'size': size,
+      'color': color,
+      'costPrice': num.tryParse(_costCtrl.text.trim()) ?? 0,
+      'sellingPrice': selling,
+      'stock': stock,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
 
-      if (!mounted) return;
-      if (openPrint) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => BarcodePrintScreen(
-              initialBarcode: barcode,
-              initialName: name,
-              initialSubtext:
-                  [size, color].where((e) => e.isNotEmpty).join(' • '),
-              initialPrice: selling.toString(),
-              initialCopies: stock > 0 ? stock : 1,
-            ),
+    if (!mounted) return;
+    if (openPrint) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => BarcodePrintScreen(
+            initialBarcode: barcode,
+            initialName: name,
+            initialSubtext:
+                [size, color].where((e) => e.isNotEmpty).join(' • '),
+            initialPrice: selling.toString(),
+            initialCopies: stock > 0 ? stock : 1,
           ),
-        );
-      } else {
-        Navigator.pop(context);
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Save failed: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _saving = false);
+        ),
+      );
+    } else {
+      Navigator.pop(context);
     }
   }
 
@@ -813,7 +806,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
       ),
     );
     if (confirm == true && widget.existingDoc != null) {
-      await widget.existingDoc!.reference.delete();
+      widget.existingDoc!.reference.delete();
       if (mounted) Navigator.pop(context);
     }
   }
@@ -934,9 +927,7 @@ class _AddEditProductScreenState extends State<AddEditProductScreen> {
               height: 48,
               child: FilledButton(
                 onPressed: _saving ? null : () => _save(openPrint: false),
-                child: _saving
-                    ? const CircularProgressIndicator(color: Colors.white)
-                    : const Text('Save Product'),
+                child: const Text('Save Product'),
               ),
             ),
             const SizedBox(height: 10),
@@ -984,7 +975,6 @@ class _BarcodePrintScreenState extends State<BarcodePrintScreen> {
 
   String _paperType = 'thermal_50x25';
   int _copies = 1;
-  bool _showPrice = true;
 
   @override
   void initState() {
@@ -1035,11 +1025,11 @@ class _BarcodePrintScreenState extends State<BarcodePrintScreen> {
                 fontWeight: pw.FontWeight.bold,
               ),
             ),
-          if (sub.isNotEmpty || (_showPrice && price.isNotEmpty))
+          if (sub.isNotEmpty || price.isNotEmpty)
             pw.Text(
               [
                 if (sub.isNotEmpty) sub,
-                if (_showPrice && price.isNotEmpty) 'MRP: Rs.$price',
+                if (price.isNotEmpty) 'MRP: Rs.$price',
               ].join('  |  '),
               maxLines: 1,
               style: pw.TextStyle(
