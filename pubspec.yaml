@@ -1,7 +1,7 @@
 name: inventory_app
-description: Shop Inventory Management with Barcode Maker and Printer Support
+description: Veda Fashion Hub Inventory & Barcode System
 publish_to: 'none'
-version: 1.0.0+2
+version: 1.0.0+3
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -20,6 +20,16 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.1
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "logo.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "logo.png"
 
 flutter:
   uses-material-design: true
+  assets:
+    - logo.png
