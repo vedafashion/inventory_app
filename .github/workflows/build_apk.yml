@@ -31,6 +31,7 @@ jobs:
           mv pubspec.yaml.bak pubspec.yaml
           mv main.dart.bak lib/main.dart
           cp google-services.json android/app/google-services.json
+          sed -i 's/android:label="inventory_app"/android:label="Veda Fashion Hub"/' android/app/src/main/AndroidManifest.xml
           sed -i 's/gradle-[0-9.]*-all.zip/gradle-8.7-all.zip/' android/gradle/wrapper/gradle-wrapper.properties
           sed -i 's/id "com.android.application" version "[^"]*"/id "com.android.application" version "8.6.0"/' android/settings.gradle
           sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "com.google.gms.google-services" version "4.4.2" apply false\n    id "org.jetbrains.kotlin.android" version "2.1.0"/' android/settings.gradle
@@ -40,11 +41,14 @@ jobs:
 
       - name: Install packages & build APK
         run: |
+          if [ -f "Logo.png" ] && [ ! -f "logo.png" ]; then mv Logo.png logo.png; fi
+          if [ ! -f "logo.png" ]; then sed -i '/logo.png/d' pubspec.yaml; fi
           flutter pub get
+          if [ -f "logo.png" ]; then dart run flutter_launcher_icons; fi
           flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: shop-inventory-apk
+          name: veda-fashion-hub-apk
           path: build/app/outputs/flutter-apk/app-release.apk
